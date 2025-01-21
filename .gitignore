@@ -1,0 +1,13 @@
+# Don't store Python virtual environment
+venv
+
+# Don't store Config files
+config.json
+
+# Don't store status files
+status.json
+*status.json
+
+# Don't store test and compare files
+test.*
+*-compare.*

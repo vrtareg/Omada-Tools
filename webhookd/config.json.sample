@@ -1,0 +1,12 @@
+{
+    "telegram_api_url": "https://api.telegram.org/",
+    "telegram_api_key": "<your_telegram_api_key>",
+    "telegram_chat_id": "<your_telegram_chat_id>",
+    "webhook_secret": "your_webhook_secret",
+    "foreground_ip": "0.0.0.0",
+    "foreground_port": 8000,
+    "background_ip": "127.0.0.1",
+    "background_port": 8080,
+    "log_dir": "",
+    "debug_print": true
+}
