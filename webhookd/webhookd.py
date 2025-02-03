@@ -2,7 +2,10 @@ import datetime
 import json
 import os
 import platform
+import smtplib
 import sys
+import threading
+import time
 from pathlib import Path
 
 import requests
@@ -16,26 +19,28 @@ if platform.system() != "Windows":
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 def load_config(config_file):
-    """Load configuration from the specified JSON file."""
+    """Load configuration from JSON file."""
     with open(config_file, "r") as f:
         return json.load(f)
 
 # Load configuration
 config = load_config(f"{script_dir}/config.json")
 
-# Telegram and Webhook Configuration
-TELEGRAM_API_URL = config.get("telegram_api_url")
-TELEGRAM_API_KEY = config.get("telegram_api_key")
-TELEGRAM_CHAT_ID = config.get("telegram_chat_id")
+# Extract Config Sections
+TELEGRAM_CONFIG = config.get("telegram", {})
+DISCORD_CONFIG = config.get("discord", {})
 WEBHOOK_SECRET = config.get("webhook_secret")
+NETWORK_CONFIG = config.get("network", {})
+RETRY_CONFIG = config.get("retry", {})
+EMAIL_CONFIG = config.get("email", {})
 
 # Network Configuration
-FOREGROUND_IP = config.get("foreground_ip", "127.0.0.1")
-FOREGROUND_PORT = config.get("foreground_port", 8000)
-BACKGROUND_IP = config.get("background_ip", "0.0.0.0")
-BACKGROUND_PORT = config.get("background_port", 8080)
+FOREGROUND_IP   = NETWORK_CONFIG.get("foreground_ip", "127.0.0.1")
+FOREGROUND_PORT = NETWORK_CONFIG.get("foreground_port", 8000)
+BACKGROUND_IP   = NETWORK_CONFIG.get("background_ip", "0.0.0.0")
+BACKGROUND_PORT = NETWORK_CONFIG.get("background_port", 8080)
 
-# Log Files
+# Logging Configuration
 LOG_DIR = config.get("log_dir", f"{script_dir}/logs")
 STDOUT_LOG_FILE = os.path.join(LOG_DIR, "stdout.log")
 STDERR_LOG_FILE = os.path.join(LOG_DIR, "stderr.log")
@@ -43,8 +48,21 @@ STDERR_LOG_FILE = os.path.join(LOG_DIR, "stderr.log")
 # Debug options
 DEBUG_PRINT = config.get("debug_print", False)
 
-# Ensure the log directory exists
+# Ensure Log Directory Exists
 os.makedirs(LOG_DIR, exist_ok=True)
+
+# Message Queue and Sent Messages Files
+QUEUE_FILE = os.path.join(script_dir, "message_queue.json")
+SENT_FILE  = os.path.join(script_dir, "message_sent.json")
+
+# Ensure queue and sent message files exist
+for file in [QUEUE_FILE, SENT_FILE]:
+    if not os.path.exists(file):
+        with open(file, "w") as f:
+            json.dump([], f, indent=4)
+
+# Lock for thread-safe file access
+queue_lock = threading.Lock()
 
 app = FastAPI()
 
@@ -53,6 +71,133 @@ def validate_access_token(headers):
     access_token = headers.get("access_token")
     if access_token != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid access token")
+
+def save_to_file(file, data):
+    """Thread-safe write to JSON file."""
+    with queue_lock:
+        with open(file, "r+") as f:
+            content = json.load(f)
+            content.append(data)
+            f.seek(0)
+            json.dump(content, f, indent=4)
+
+def remove_from_queue(message):
+    """Thread-safe removal from queue."""
+    with queue_lock:
+        with open(QUEUE_FILE, "r+") as f:
+            queue = json.load(f)
+            queue = [msg for msg in queue if msg != message]
+            f.seek(0)
+            f.truncate()
+            json.dump(queue, f, indent=4)
+
+def send_email_alert(subject, body):
+    """Send an email notification on repeated failures."""
+    if EMAIL_CONFIG["enable"]:
+        try:
+            server = smtplib.SMTP(EMAIL_CONFIG["server"], EMAIL_CONFIG["port"])
+            server.starttls()
+            email_body = f"Subject: {subject}\n\n{body}"
+            server.sendmail(EMAIL_CONFIG["sender"], EMAIL_CONFIG["recipient"], email_body)
+            server.quit()
+        except Exception as e:
+            if DEBUG_PRINT:
+                print("Failed to send email alert:", str(e))
+
+def send_message(message):
+    """Send message to the appropriate platform."""
+    platform = message["platform"]
+    if platform == "telegram":
+        return send_to_telegram_api(message["body"])
+    elif platform == "discord":
+        return send_to_discord_api(message["body"])
+    return False
+
+def process_queue():
+    """Background queue processor with retry logic."""
+    while True:
+        with queue_lock:
+            with open(QUEUE_FILE, "r") as f:
+                queue = json.load(f)
+
+        for message in queue:
+            retries = 0
+            while retries < RETRY_CONFIG["send_retry_num"]:
+                success = send_message(message)
+                if success:
+                    remove_from_queue(message)
+                    save_to_file(SENT_FILE, message)
+                    break
+                retries += 1
+                time.sleep(RETRY_CONFIG["send_retry_sleep"])
+
+            if retries >= RETRY_CONFIG["send_retry_num"]:
+                send_email_alert("Message Delivery Failed", f"Failed to send: {message}")
+                time.sleep(RETRY_CONFIG["send_retry_wait"])
+
+        time.sleep(5)  # Wait before checking the queue again
+
+def send_to_telegram_api(body):
+    """Send formatted message to Telegram."""
+    payload = {
+        "chat_id": TELEGRAM_CONFIG["chat_id"],
+        "disable_web_page_preview": True,
+        "text": body,
+        "parse_mode": "Markdown"
+    }
+    headers = {"Content-Type": "application/json"}
+    tg_url = f"{TELEGRAM_CONFIG['api_url']}bot{TELEGRAM_CONFIG['api_key']}/sendMessage"
+
+    response = requests.post(tg_url, json=payload, headers=headers)
+    if DEBUG_PRINT:
+        print("Telegram Response:", response.status_code, response.text)
+    return response.status_code == 200
+
+def send_to_discord_api(body):
+    """Send formatted message to Discord."""
+    payload = {"content": body}
+    headers = {
+        "Authorization": f"Bot {DISCORD_CONFIG['bot_token']}",
+        "Content-Type": "application/json"
+    }
+    discord_url = f"{DISCORD_CONFIG['api_url']}/channels/{DISCORD_CONFIG['channel_id']}/messages"
+
+    response = requests.post(discord_url, json=payload, headers=headers)
+    if DEBUG_PRINT:
+        print("Discord Response:", response.status_code, response.text)
+    return response.status_code == 200
+
+def format_message(body, platform):
+    """Format message for Telegram or Discord."""
+    timestamp = body.get("timestamp")
+    formatted_timestamp = (
+        datetime.datetime.fromtimestamp(timestamp / 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        if timestamp
+        else "N/A"
+    )
+
+    if platform == "telegram":
+        text_parts = [
+            f"*Site*: {body.get('Site')}",
+            f"*Description*: {body.get('description')}",
+            f"*Controller*: {body.get('Controller')}",
+            f"*Timestamp*: {formatted_timestamp}"
+        ]
+        if "text" in body and isinstance(body["text"], list):
+            text_parts.append("*Events:*")
+            text_parts.extend(f"- {line}" for line in body["text"])
+    else:
+        text_parts = [
+            f"**Site**: {body.get('Site')}",
+            f"**Description**: {body.get('description')}",
+            f"**Controller**: {body.get('Controller')}",
+            f"**Timestamp**: {formatted_timestamp}"
+        ]
+        if "text" in body and isinstance(body["text"], list):
+            text_parts.append("**Events:**")
+            text_parts.extend(f"- {line}" for line in body["text"])
+
+    return "\n".join(text_parts)
 
 @app.post("/webhook")
 async def receive_webhook(request: Request):
@@ -68,74 +213,44 @@ async def receive_webhook(request: Request):
     return {"status": "received"}
 
 @app.post("/tg_msg")
-async def send_to_telegram(request: Request):
-    """Endpoint to process Omada messages and send them to Telegram."""
+async def queue_telegram(request: Request):
+    """Receive and queue message for Telegram."""
     validate_access_token(request.headers)
     body = await request.json()
 
     # Log the body for debugging if DEBUG_PRINT is enabled
     if DEBUG_PRINT:
-        print("Body:", json.dumps(body, indent=4))
+        print("Received Telegram Message:", json.dumps(body, indent=4))
 
-    # Remove the 'shardSecret' field if it exists
-    body.pop("shardSecret", None)
+    message_text = format_message(body, "telegram")
 
-    # Decode the timestamp to a human-readable format
-    raw_timestamp = body.get("timestamp")
-    formatted_timestamp = (
-        datetime.datetime.fromtimestamp(raw_timestamp / 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        if raw_timestamp
-        else "N/A"
-    )
+    save_to_file(QUEUE_FILE, {"platform": "telegram", "body": message_text})
+    return {"status": "queued"}
 
-    # Prepare the message text
-    text_parts = [
-        f"*Site*: {body.get('Site')}",
-        f"*Description*: {body.get('description')}",
-        f"*Controller*: {body.get('Controller')}",
-        f"*Timestamp*: {formatted_timestamp}",
-    ]
+@app.post("/discord_msg")
+async def queue_discord(request: Request):
+    """Receive and queue message for Discord."""
+    validate_access_token(request.headers)
+    body = await request.json()
 
-    # Add multiline "text" entries to the message
-    if "text" in body and isinstance(body["text"], list):
-        text_parts.append("*Events:*")
-        text_parts.extend(f"- {line}" for line in body["text"])
-
-    # Join all parts with newlines
-    message_text = "\n".join(text_parts)
-
-    # Log the message text for debugging if DEBUG_PRINT is enabled
+    # Log the body for debugging if DEBUG_PRINT is enabled
     if DEBUG_PRINT:
-        print("Message:", message_text)
+        print("Received Discord Message:", json.dumps(body, indent=4))
 
-    # Construct the Telegram API endpoint
-    tg_url = f"{TELEGRAM_API_URL}bot{TELEGRAM_API_KEY}/sendMessage"
+    message_text = format_message(body, "discord")
 
-    # Prepare payload and headers
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "disable_web_page_preview": True,
-        "text": message_text,
-        "parse_mode": "Markdown"
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
+    save_to_file(QUEUE_FILE, {"platform": "discord", "body": message_text})
 
-    # Send the message to Telegram
-    response = requests.post(tg_url, json=payload, headers=headers)
-
-    # Log Telegram API response if DEBUG_PRINT is enabled
-    if DEBUG_PRINT:
-        print("Telegram API Response:", response.status_code, response.text)
-
-    return {"status": "sent", "telegram_response": response.json()}
+    return {"status": "queued"}
 
 @app.get("/")
 async def root():
     """Health check endpoint."""
     return {"message": "Webhook server is running"}
+
+# Start the background queue processor
+queue_thread = threading.Thread(target=process_queue, daemon=True)
+queue_thread.start()
 
 def run_server(ip, port):
     """Run the server on the specified IP and port."""

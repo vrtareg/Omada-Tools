@@ -8,6 +8,9 @@ config.json
 status.json
 *status.json
 
+# Don't store message files
+message_*.json
+
 # Don't store test and compare files
 test.*
 *-compare.*

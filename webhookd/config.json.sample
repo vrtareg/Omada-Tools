@@ -1,12 +1,33 @@
 {
-    "telegram_api_url": "https://api.telegram.org/",
-    "telegram_api_key": "<your_telegram_api_key>",
-    "telegram_chat_id": "<your_telegram_chat_id>",
-    "webhook_secret": "your_webhook_secret",
-    "foreground_ip": "0.0.0.0",
-    "foreground_port": 8000,
-    "background_ip": "127.0.0.1",
-    "background_port": 8080,
+    "telegram": {
+        "api_url": "https://api.telegram.org/",
+        "api_key": "YOUR_TELEGRAM_BOT_API_KEY",
+        "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+    },
+    "discord": {
+        "api_url": "https://discord.com/api",
+        "bot_token": "YOUR_DISCORD_BOT_TOKEN",
+        "channel_id": "YOUR_DISCORD_CHANNEL_ID"
+    },
+    "webhook_secret": "YOUR_WEBHOOK_SECRET",
+    "network": {
+        "foreground_ip": "0.0.0.0",
+        "foreground_port": 8000,
+        "background_ip": "127.0.0.1",
+        "background_port": 8080
+    },
     "log_dir": "",
-    "debug_print": true
+    "debug_print": true,
+    "retry": {
+        "send_retry_sleep": 5,
+        "send_retry_num": 3,
+        "send_retry_wait": 300
+    },
+    "email": {
+        "enable": false,
+        "server": "smtp.yourserver.com",
+        "port": 587,
+        "sender": "alerts@yourdomain.com",
+        "recipient": "admin@yourdomain.com"
+    }
 }
