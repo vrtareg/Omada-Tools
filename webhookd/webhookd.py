@@ -202,7 +202,7 @@ def escape_text(text, platform=None):
         return str(text)  # Ensure it's a string
 
     if platform == "telegram":
-        escape_chars = r"_*[]()~`>#+-=|{}.!'"
+        escape_chars = r"_"
         return re.sub(r"([" + re.escape(escape_chars) + r"])", r"\\\1", text)
 
     return text  # No escaping for Discord or other platforms
