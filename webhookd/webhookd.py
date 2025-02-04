@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import platform
+import re
 import smtplib
 import sys
 import threading
@@ -137,6 +138,18 @@ def process_queue():
 
         time.sleep(5)  # Wait before checking the queue again
 
+def print_debug_response(response):
+    """Helper function to print the response content in the proper format."""
+    if DEBUG_PRINT:
+        try:
+            # Try to parse response text as JSON
+            json_response = response.json()
+            print("Response (JSON):", json.dumps(json_response, indent=4))
+        except ValueError:
+            # If it's not JSON, print the raw text response
+            print("Response (Text):", response.text)
+
+
 def send_to_telegram_api(body):
     """Send formatted message to Telegram."""
     payload = {
@@ -149,8 +162,13 @@ def send_to_telegram_api(body):
     tg_url = f"{TELEGRAM_CONFIG['api_url']}bot{TELEGRAM_CONFIG['api_key']}/sendMessage"
 
     response = requests.post(tg_url, json=payload, headers=headers)
+
     if DEBUG_PRINT:
-        print("Telegram Response:", response.status_code, response.text)
+        print("---------- Telegram Response: ----------")
+        print("Status: ", response.status_code)
+        print_debug_response(response)
+        print("---------- Telegram Response: ----------")
+
     return response.status_code == 200
 
 def send_to_discord_api(body):
@@ -163,39 +181,51 @@ def send_to_discord_api(body):
     discord_url = f"{DISCORD_CONFIG['api_url']}/channels/{DISCORD_CONFIG['channel_id']}/messages"
 
     response = requests.post(discord_url, json=payload, headers=headers)
+
     if DEBUG_PRINT:
-        print("Discord Response:", response.status_code, response.text)
+        print("---------- Discord Response: ----------")
+        print("Status: ", response.status_code)
+        print_debug_response(response)
+        print("---------- Discord Response: ----------")
+
     return response.status_code == 200
 
+def escape_text(text, platform=None):
+    """
+    Escape special characters in text based on the platform.
+
+    - Telegram: Escapes Markdown characters that interfere with formatting.
+    - Discord: No escaping needed (handles Markdown differently).
+    - Default: Returns text unchanged if no platform is specified.
+    """
+    if not isinstance(text, str):
+        return str(text)  # Ensure it's a string
+
+    if platform == "telegram":
+        escape_chars = r"_*[]()~`>#+-=|{}.!'"
+        return re.sub(r"([" + re.escape(escape_chars) + r"])", r"\\\1", text)
+
+    return text  # No escaping for Discord or other platforms
+
 def format_message(body, platform):
-    """Format message for Telegram or Discord."""
-    timestamp = body.get("timestamp")
+    """Format the message for the given platform."""
+    raw_timestamp = body.get("timestamp")
     formatted_timestamp = (
-        datetime.datetime.fromtimestamp(timestamp / 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        if timestamp
+        datetime.datetime.fromtimestamp(raw_timestamp / 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        if raw_timestamp
         else "N/A"
     )
 
-    if platform == "telegram":
-        text_parts = [
-            f"*Site*: {body.get('Site')}",
-            f"*Description*: {body.get('description')}",
-            f"*Controller*: {body.get('Controller')}",
-            f"*Timestamp*: {formatted_timestamp}"
-        ]
-        if "text" in body and isinstance(body["text"], list):
-            text_parts.append("*Events:*")
-            text_parts.extend(f"- {line}" for line in body["text"])
-    else:
-        text_parts = [
-            f"**Site**: {body.get('Site')}",
-            f"**Description**: {body.get('description')}",
-            f"**Controller**: {body.get('Controller')}",
-            f"**Timestamp**: {formatted_timestamp}"
-        ]
-        if "text" in body and isinstance(body["text"], list):
-            text_parts.append("**Events:**")
-            text_parts.extend(f"- {line}" for line in body["text"])
+    text_parts = [
+        f"""{"**Site**"        if platform == "discord" else '*Site*'}:        {escape_text(body.get("Site",        "N/A"), platform)}""",
+        f"""{"**Description**" if platform == "discord" else '*Description*'}: {escape_text(body.get("description", "N/A"), platform)}""",
+        f"""{"**Controller**"  if platform == "discord" else '*Controller*'}:  {escape_text(body.get("Controller",  "N/A"), platform)}""",
+        f"""{"**Timestamp**"   if platform == "discord" else '*Timestamp*'}:   {escape_text(formatted_timestamp, platform)}""",
+    ]
+
+    if "text" in body and isinstance(body["text"], list):
+        text_parts.append("**Events:**" if platform == "discord" else "*Events:*")
+        text_parts.extend(f"- {escape_text(line, platform)}" for line in body["text"])
 
     return "\n".join(text_parts)
 
@@ -206,9 +236,17 @@ async def receive_webhook(request: Request):
     headers = dict(request.headers)
     body = await request.json()
 
+    # Removing secret
+    body.pop("shardSecret", None)
+
     # Log headers and body for debugging
-    print("Headers:", headers)
-    print("Body:", body)
+    if DEBUG_PRINT:
+        print("---------- Headers: ----------")
+        print(json.dumps(headers, indent=4))
+        print("---------- Headers: ----------")
+        print("---------- Body: ----------")
+        print(json.dumps(body,    indent=4))
+        print("---------- Body: ----------")
 
     return {"status": "received"}
 
@@ -218,9 +256,14 @@ async def queue_telegram(request: Request):
     validate_access_token(request.headers)
     body = await request.json()
 
+    # Removing secret
+    body.pop("shardSecret", None)
+
     # Log the body for debugging if DEBUG_PRINT is enabled
     if DEBUG_PRINT:
-        print("Received Telegram Message:", json.dumps(body, indent=4))
+        print("---------- Received Telegram Message: ----------")
+        print(json.dumps(body, indent=4))
+        print("---------- Received Telegram Message: ----------")
 
     message_text = format_message(body, "telegram")
 
@@ -233,9 +276,14 @@ async def queue_discord(request: Request):
     validate_access_token(request.headers)
     body = await request.json()
 
+    # Removing secret
+    body.pop("shardSecret", None)
+
     # Log the body for debugging if DEBUG_PRINT is enabled
     if DEBUG_PRINT:
-        print("Received Discord Message:", json.dumps(body, indent=4))
+        print("---------- Received Discord Message: ----------")
+        print(json.dumps(body, indent=4))
+        print("---------- Received Discord Message: ----------")
 
     message_text = format_message(body, "discord")
 
