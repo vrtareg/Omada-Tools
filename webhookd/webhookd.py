@@ -94,7 +94,7 @@ def remove_from_queue(message):
 
 def send_email_alert(subject, body):
     """Send an email notification on repeated failures."""
-    if EMAIL_CONFIG["enable"]:
+    if EMAIL_CONFIG.get("enable") and EMAIL_CONFIG.get("server") and EMAIL_CONFIG.get("port") and EMAIL_CONFIG.get("sender") and EMAIL_CONFIG.get("recipient"):
         try:
             server = smtplib.SMTP(EMAIL_CONFIG["server"], EMAIL_CONFIG["port"])
             server.starttls()
@@ -124,11 +124,15 @@ def process_queue():
         for message in queue:
             retries = 0
             while retries < RETRY_CONFIG["send_retry_num"]:
-                success = send_message(message)
-                if success:
-                    remove_from_queue(message)
-                    save_to_file(SENT_FILE, message)
-                    break
+                try:
+                    success = send_message(message)
+                    if success:
+                        remove_from_queue(message)
+                        save_to_file(SENT_FILE, message)
+                        break
+                except Exception as e:
+                    if DEBUG_PRINT:
+                        print("Error sending message:", str(e))
                 retries += 1
                 time.sleep(RETRY_CONFIG["send_retry_sleep"])
 
@@ -148,7 +152,6 @@ def print_debug_response(response):
         except ValueError:
             # If it's not JSON, print the raw text response
             print("Response (Text):", response.text)
-
 
 def send_to_telegram_api(body):
     """Send formatted message to Telegram."""
@@ -202,8 +205,8 @@ def escape_text(text, platform=None):
         return str(text)  # Ensure it's a string
 
     if platform == "telegram":
-        escape_chars = r"_"
-        return re.sub(r"([" + re.escape(escape_chars) + r"])", r"\\\1", text)
+        escape_chars = r"_["
+        text = re.sub(r"([" + re.escape(escape_chars) + r"])", r"\\\1", text)
 
     return text  # No escaping for Discord or other platforms
 
